@@ -1,6 +1,7 @@
 import argparse
 import base64
 import io
+import math
 import tempfile
 import time
 import uuid
@@ -11,7 +12,8 @@ import requests as req_lib
 import soundfile as sf
 import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from transformers import AutoModel, AutoProcessor
 from typing import Optional
@@ -94,6 +96,28 @@ class ASRModel:
         transcript_ids = outputs[0, prompt_len:].cpu().tolist()
         transcript = self.processor.tokenizer.decode(transcript_ids, skip_special_tokens=True).strip()
         return transcript
+
+
+def _format_srt(text: str, duration: float) -> str:
+    def _ts(sec: float) -> str:
+        h = int(sec // 3600)
+        m = int((sec % 3600) // 60)
+        s = int(sec % 60)
+        ms = int((sec % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    return f"1\n{_ts(0.0)} --> {_ts(duration)}\n{text}\n"
+
+
+def _format_vtt(text: str, duration: float) -> str:
+    def _ts(sec: float) -> str:
+        h = int(sec // 3600)
+        m = int((sec % 3600) // 60)
+        s = int(sec % 60)
+        ms = int((sec % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+    return f"WEBVTT\n\n{_ts(0.0)} --> {_ts(duration)}\n{text}\n"
 
 
 app = FastAPI(title="GLM-ASR OpenAI-Compatible API")
@@ -212,6 +236,80 @@ async def chat_completions(request: ChatCompletionRequest):
             total_tokens=0,
         ),
     )
+
+
+@app.post("/v1/audio/transcriptions")
+async def create_transcription(
+    file: UploadFile = File(...),
+    model: str = Form("glm-asr"),
+    response_format: str = Form("json"),
+    prompt: Optional[str] = Form(None),
+    language: Optional[str] = Form(None),
+):
+    if asr_model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet")
+
+    if response_format not in ("json", "text", "srt", "vtt", "verbose_json"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid response_format: {response_format}. "
+            "Supported: json, text, srt, vtt, verbose_json",
+        )
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file uploaded")
+
+    original_filename = file.filename or "audio.wav"
+    suffix = Path(original_filename).suffix or ".wav"
+
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        tmp.write(content)
+        tmp.close()
+
+        text_prompt = "Please transcribe this audio into text"
+        if prompt:
+            text_prompt = prompt
+
+        transcript = asr_model.transcribe(tmp.name, text_prompt, max_new_tokens=1024)
+
+        info = sf.info(tmp.name)
+        duration = info.duration
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+
+    if response_format == "text":
+        return PlainTextResponse(content=transcript)
+    elif response_format == "srt":
+        return PlainTextResponse(content=_format_srt(transcript, duration))
+    elif response_format == "vtt":
+        return PlainTextResponse(content=_format_vtt(transcript, duration))
+    elif response_format == "verbose_json":
+        return {
+            "task": "transcribe",
+            "language": language or "unknown",
+            "duration": round(duration, 3),
+            "text": transcript,
+            "segments": [
+                {
+                    "id": 0,
+                    "seek": 0,
+                    "start": 0.0,
+                    "end": round(duration, 3),
+                    "text": transcript,
+                    "tokens": [],
+                    "temperature": 0.0,
+                    "avg_logprob": 0.0,
+                    "compression_ratio": 0.0,
+                    "no_speech_prob": 0.0,
+                }
+            ],
+        }
+    else:
+        return {"text": transcript}
 
 
 @app.get("/health")

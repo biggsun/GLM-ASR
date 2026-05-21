@@ -1,16 +1,31 @@
-# OpenAI 兼容接口使用指南
+# API 文档
 
-## 概述
+GLM-ASR 提供两组 OpenAI 兼容接口：
 
-GLM-ASR 提供 OpenAI 兼容的 Chat Completions API，支持通过标准 HTTP 请求进行语音识别。
+| 接口 | 用途 | 协议 |
+|------|------|------|
+| `/v1/audio/transcriptions` | 语音转文字（Whisper API） | multipart/form-data |
+| `/v1/chat/completions` | Chat Completions 音频识别 | JSON |
 
-- **接口地址**：`http://<host>:9930/v1/chat/completions`
-- **模型名称**：`glm-asr`
-- **支持的音频输入方式**：base64 编码、HTTP/HTTPS URL
+---
 
-## 快速开始
+## 一、Whisper API（推荐）
 
-### 1. Python（OpenAI SDK）
+### POST `/v1/audio/transcriptions`
+
+兼容 OpenAI Whisper 转录接口，通过文件上传进行语音识别。
+
+#### 请求参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `file` | file | 是 | 音频文件（mp3/mp4/mpeg/mpga/m4a/wav/webm） |
+| `model` | string | 否 | 模型名称，默认 `glm-asr` |
+| `response_format` | string | 否 | 响应格式：`json`/`text`/`srt`/`vtt`/`verbose_json`，默认 `json` |
+| `prompt` | string | 否 | 提示文本，可辅助识别准确率 |
+| `language` | string | 否 | 音频语言（ISO 639-1），如 `zh`、`en` |
+
+#### Python 示例（OpenAI SDK）
 
 ```bash
 pip install openai
@@ -18,11 +33,134 @@ pip install openai
 
 ```python
 from openai import OpenAI
+
+client = OpenAI(api_key="EMPTY", base_url="http://localhost:9930/v1")
+
+# 基础用法
+with open("audio.wav", "rb") as f:
+    transcription = client.audio.transcriptions.create(
+        model="glm-asr",
+        file=f
+    )
+print(transcription.text)
+
+# 指定格式和提示
+with open("audio.wav", "rb") as f:
+    transcription = client.audio.transcriptions.create(
+        model="glm-asr",
+        file=f,
+        response_format="verbose_json",
+        language="zh",
+        prompt="这是一段中文会议录音"
+    )
+print(transcript.text)
+```
+
+#### curl 示例
+
+```bash
+# json 格式（默认）
+curl http://localhost:9930/v1/audio/transcriptions \
+  -F file=@audio.wav \
+  -F model=glm-asr
+
+# 纯文本
+curl http://localhost:9930/v1/audio/transcriptions \
+  -F file=@audio.wav \
+  -F model=glm-asr \
+  -F response_format=text
+
+# SRT 字幕
+curl http://localhost:9930/v1/audio/transcriptions \
+  -F file=@audio.wav \
+  -F model=glm-asr \
+  -F response_format=srt
+
+# VTT 字幕
+curl http://localhost:9930/v1/audio/transcriptions \
+  -F file=@audio.wav \
+  -F model=glm-asr \
+  -F response_format=vtt
+
+# 详细 JSON（含时长、分段信息）
+curl http://localhost:9930/v1/audio/transcriptions \
+  -F file=@audio.wav \
+  -F model=glm-asr \
+  -F response_format=verbose_json
+```
+
+#### 响应格式
+
+**json（默认）**
+
+```json
+{"text": "转录文本内容"}
+```
+
+**text**
+
+```
+转录文本内容
+```
+
+**srt**
+
+```
+1
+00:00:00,000 --> 00:00:06,000
+转录文本内容
+```
+
+**vtt**
+
+```
+WEBVTT
+
+00:00:00.000 --> 00:00:06.000
+转录文本内容
+```
+
+**verbose_json**
+
+```json
+{
+  "task": "transcribe",
+  "language": "unknown",
+  "duration": 6.0,
+  "text": "转录文本内容",
+  "segments": [
+    {
+      "id": 0,
+      "seek": 0,
+      "start": 0.0,
+      "end": 6.0,
+      "text": "转录文本内容",
+      "tokens": [],
+      "temperature": 0.0,
+      "avg_logprob": 0.0,
+      "compression_ratio": 0.0,
+      "no_speech_prob": 0.0
+    }
+  ]
+}
+```
+
+---
+
+## 二、Chat Completions API
+
+### POST `/v1/chat/completions`
+
+通过 OpenAI Chat Completions 协议进行音频识别，音频通过 `audio_url` 传递。
+
+#### Python 示例
+
+```python
+from openai import OpenAI
 import base64
 
 client = OpenAI(api_key="EMPTY", base_url="http://localhost:9930/v1")
 
-# 读取本地音频文件并编码为 base64
 with open("audio.wav", "rb") as f:
     audio_b64 = base64.b64encode(f.read()).decode()
 
@@ -32,75 +170,19 @@ response = client.chat.completions.create(
         {
             "role": "user",
             "content": [
-                {
-                    "type": "audio_url",
-                    "audio_url": {"url": f"data:audio/wav;base64,{audio_b64}"}
-                },
-                {
-                    "type": "text",
-                    "text": "Please transcribe this audio into text"
-                }
+                {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{audio_b64}"}},
+                {"type": "text", "text": "Please transcribe this audio into text"}
             ]
         }
     ],
     max_tokens=1024
 )
-
 print(response.choices[0].message.content)
 ```
 
-### 2. Python（标准库，无第三方依赖）
-
-```python
-import json
-import urllib.request
-import base64
-
-with open("audio.wav", "rb") as f:
-    audio_b64 = base64.b64encode(f.read()).decode()
-
-data = {
-    "model": "glm-asr",
-    "messages": [{
-        "role": "user",
-        "content": [
-            {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{audio_b64}"}},
-            {"type": "text", "text": "Please transcribe this audio into text"}
-        ]
-    }],
-    "max_tokens": 1024
-}
-
-req = urllib.request.Request(
-    "http://localhost:9930/v1/chat/completions",
-    data=json.dumps(data).encode(),
-    headers={"Content-Type": "application/json"}
-)
-resp = urllib.request.urlopen(req, timeout=120)
-result = json.loads(resp.read())
-print(result["choices"][0]["message"]["content"])
-```
-
-### 3. curl
+#### curl 示例
 
 ```bash
-# 使用 base64 编码
-AUDIO_B64=$(base64 -w0 audio.wav)
-curl http://localhost:9930/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"model\": \"glm-asr\",
-    \"messages\": [{
-      \"role\": \"user\",
-      \"content\": [
-        {\"type\": \"audio_url\", \"audio_url\": {\"url\": \"data:audio/wav;base64,${AUDIO_B64}\"}},
-        {\"type\": \"text\", \"text\": \"Please transcribe this audio into text\"}
-      ]
-    }],
-    \"max_tokens\": 1024
-  }"
-
-# 使用 URL
 curl http://localhost:9930/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
@@ -116,150 +198,54 @@ curl http://localhost:9930/v1/chat/completions \
   }'
 ```
 
-## 请求格式
-
-### POST `/v1/chat/completions`
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `model` | string | 是 | 固定为 `glm-asr` |
-| `messages` | array | 是 | 消息列表，包含音频和文本内容 |
-| `max_tokens` | integer | 否 | 最大生成 token 数，默认 1024 |
-| `temperature` | float | 否 | 保留参数，当前固定为 0 |
-| `stream` | boolean | 否 | 保留参数，当前不支持流式输出 |
-
-### messages 格式
-
-```json
-{
-  "role": "user",
-  "content": [
-    {
-      "type": "audio_url",
-      "audio_url": {
-        "url": "<音频地址>"
-      }
-    },
-    {
-      "type": "text",
-      "text": "<提示文本>"
-    }
-  ]
-}
-```
-
-### 音频地址格式
+#### 音频 URL 格式
 
 | 格式 | 示例 |
 |------|------|
 | Base64 | `data:audio/wav;base64,UklGRi...` |
-| HTTP URL | `https://example.com/audio.wav` |
+| HTTP URL | `http://example.com/audio.wav` |
 | HTTPS URL | `https://example.com/audio.mp3` |
 
-### 支持的音频格式
-
-WAV、MP3、MP4、FLAC、OGG 等常见格式。
-
-### 提示文本
-
-`text` 字段用于指定识别指令，支持多语言：
-
-| 语言 | 提示文本 |
-|------|----------|
-| 英文 | `Please transcribe this audio into text` |
-| 中文 | `请将这段音频转录为文字` |
-| 通用 | `Transcribe this audio` |
-
-## 响应格式
-
-```json
-{
-  "id": "chatcmpl-xxxxxxxxxxxxxxxxxxxxxxxx",
-  "object": "chat.completion",
-  "created": 1779284806,
-  "model": "glm-asr",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "转录文本内容"
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 0,
-    "completion_tokens": 0,
-    "total_tokens": 0
-  }
-}
-```
+---
 
 ## 辅助接口
 
 ### GET `/v1/models`
 
-返回可用模型列表。
-
 ```bash
 curl http://localhost:9930/v1/models
 ```
 
-响应：
-
 ```json
-{
-  "object": "list",
-  "data": [
-    {
-      "id": "glm-asr",
-      "object": "model",
-      "created": 1779284806,
-      "owned_by": "glm-asr"
-    }
-  ]
-}
+{"object": "list", "data": [{"id": "glm-asr", "object": "model", "created": 1779284806, "owned_by": "glm-asr"}]}
 ```
 
 ### GET `/health`
-
-健康检查。
 
 ```bash
 curl http://localhost:9930/health
 ```
 
-响应：
-
 ```json
-{
-  "status": "ok",
-  "model_loaded": true
-}
+{"status": "ok", "model_loaded": true}
 ```
+
+---
 
 ## 错误码
 
 | HTTP 状态码 | 含义 |
 |-------------|------|
-| 400 | 请求格式错误，缺少 audio_url |
-| 500 | 模型推理失败，详情见 `detail` 字段 |
+| 400 | 请求参数错误 |
+| 500 | 模型推理失败 |
 | 503 | 模型尚未加载完成 |
 
-错误响应示例：
+---
 
-```json
-{
-  "detail": "No audio_url provided. This API only supports audio transcription."
-}
-```
+## 兼容性说明
 
-## 与 OpenAI API 的兼容性
-
-本服务遵循 OpenAI Chat Completions 协议格式，可直接集成到支持 OpenAI API 的应用中：
-
-- **api_key**：任意非空字符串即可（如 `EMPTY`）
+- **api_key**：任意非空字符串（如 `EMPTY`）
 - **base_url**：`http://<host>:9930/v1`
 - **model**：`glm-asr`
-- **content 类型**：使用 `audio_url` 传递音频（与 GPT-4o 音频接口格式一致）
+- 支持的音频格式：mp3、mp4、mpeg、mpga、m4a、wav、webm
+- 支持 17 种语言的语音识别

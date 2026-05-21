@@ -9,6 +9,7 @@ RUN python3 -m pip install --no-cache-dir \
     python3 -m pip install --no-cache-dir \
     "git+https://github.com/huggingface/transformers" \
     fastapi \
+    python-multipart \
     uvicorn[standard] \
     modelscope \
     requests \
